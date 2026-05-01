@@ -1,0 +1,10 @@
+.env
+processed/
+model/
+__pycache__/
+.venv/
+venv/
+anime_recommender.db
+output.md
+test_credentials.json
+data/

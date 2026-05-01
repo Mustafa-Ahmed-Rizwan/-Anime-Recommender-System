@@ -1,0 +1,4 @@
+streamlit
+implicit
+python-dotenv
+requests
