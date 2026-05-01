@@ -77,7 +77,8 @@ def parse_query(
     query: str,
     faiss_artifacts: dict,
     content_matrix_norm: np.ndarray,
-    anime_meta: pd.DataFrame = None
+    anime_meta: pd.DataFrame = None,
+    genre_idf: np.ndarray = None
 ) -> tuple[np.ndarray, dict, list[int], str]:
     """
     Main entry point for NLU.
@@ -144,6 +145,11 @@ def parse_query(
         # Sharpen with temperature then softmax
         sims_shifted = sims - sims.max()
         weights      = np.exp(sims_shifted * 15)  # Significant increase (15)
+        
+        # ── POPULARITY BIAS CORRECTION (Genre IDF) ────────────────────────────
+        if genre_idf is not None:
+            weights = weights * genre_idf
+
         weights      = weights / (weights.sum() + 1e-8)
 
         # Build query vector: weighted sum using genre columns of content matrix

@@ -216,6 +216,7 @@ if search_clicked and query.strip():
             artifacts,
             artifacts["content_matrix_norm"],
             artifacts["anime_meta"],
+            artifacts.get("genre_idf"),
         )
         st.session_state.nlu_genres = genre_weights
         st.session_state.nlu_method = method

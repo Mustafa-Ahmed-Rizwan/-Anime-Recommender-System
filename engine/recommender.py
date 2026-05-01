@@ -45,6 +45,17 @@ def load_artifacts(model_dir: str, processed_dir: str) -> dict:
         "n_anime": item_factors.shape[0],
     }
 
+    # ── Popularity Bias Correction: Genre IDF ────────────────────────────────
+    n_genres = len(feature_meta["genre_classes"])
+    genre_cols = content_matrix_norm[:, :n_genres]
+    # Calculate how many anime have each genre (non-zero entry)
+    genre_freqs = (genre_cols > 0).sum(axis=0)
+    # IDF = log(N / freq)
+    genre_idf = np.log((item_factors.shape[0] + 1) / (genre_freqs + 1)) + 1
+    
+    art["genre_idf"] = genre_idf.astype(np.float32)
+    return art
+
 
 # ── FAISS search helper ───────────────────────────────────────────────────────
 def _faiss_search(
@@ -58,6 +69,57 @@ def _faiss_search(
         q = q / norm
     D, I = index.search(q, top_k)
     return D[0], I[0]
+
+
+# ── MMR Diversity Re-ranker ───────────────────────────────────────────────────
+def _apply_mmr(
+    candidates: pd.DataFrame,
+    content_matrix: np.ndarray,
+    top_n: int,
+    lambda_param: float = 0.5,
+) -> pd.DataFrame:
+    """
+    Maximal Marginal Relevance re-ranking for diversity.
+    Score(i) = lambda * relevance(i) - (1-lambda) * max_similarity(i, selected)
+    """
+    if len(candidates) <= 1:
+        return candidates
+
+    selected_indices = [0] # Start with the most relevant one
+    remaining_indices = list(range(1, len(candidates)))
+    
+    # We need the internal anime indices for similarity calculation
+    # These are stored in 'internal_idx' in the candidates DF
+    anime_idxs = candidates["internal_idx"].values
+    relevance_scores = candidates["mmr_score"].values
+    
+    while len(selected_indices) < top_n and remaining_indices:
+        best_mmr = -np.inf
+        best_idx = -1
+        
+        # Vectors of already selected items
+        selected_vecs = content_matrix[anime_idxs[selected_indices]]
+        
+        for i in remaining_indices:
+            relevance = relevance_scores[i]
+            target_vec = content_matrix[anime_idxs[i]]
+            
+            # Max similarity to any already selected item (Cosine)
+            similarities = np.dot(selected_vecs, target_vec)
+            max_sim = np.max(similarities)
+            
+            mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim
+            
+            if mmr_score > best_mmr:
+                best_mmr = mmr_score
+                best_idx = i
+        
+        if best_idx == -1:
+            break
+        selected_indices.append(best_idx)
+        remaining_indices.remove(best_idx)
+        
+    return candidates.iloc[selected_indices].reset_index(drop=True)
 
 
 # ── Build explanation line ────────────────────────────────────────────────────
@@ -149,6 +211,8 @@ def recommend_by_query_vector(
         results.append(
             {
                 "anime_id": original_id,
+                "internal_idx": a_idx,  # Needed for MMR
+                "mmr_score": float(score), # Relevance for MMR
                 "name": info["display_name"],
                 "genres": info["Genres"],
                 "type": info["Type"],
@@ -158,10 +222,10 @@ def recommend_by_query_vector(
                 "source": "Content (FAISS)",
             }
         )
-        if len(results) >= top_n:
-            break
 
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    # Apply MMR Diversity
+    return _apply_mmr(df, content_matrix_norm, top_n, lambda_param=0.6)
 
 
 # ── Hybrid: logged-in user ────────────────────────────────────────────────────
@@ -309,6 +373,8 @@ def recommend_hybrid(
         results.append(
             {
                 "anime_id": original_id,
+                "internal_idx": a_idx, # Needed for MMR
+                "mmr_score": float(hybrid[a_idx]), # Relevance for MMR
                 "name": info["display_name"],
                 "genres": info["Genres"],
                 "type": info["Type"],
@@ -320,10 +386,10 @@ def recommend_hybrid(
                 "source": dominant_source,
             }
         )
-        if len(results) >= top_n:
-            break
 
-    return pd.DataFrame(results), alpha, n_rated
+    df = pd.DataFrame(results)
+    # Apply MMR Diversity
+    return _apply_mmr(df, content_matrix_norm, top_n, lambda_param=0.7), alpha, n_rated
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
